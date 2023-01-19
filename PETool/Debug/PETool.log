@@ -1,0 +1,3 @@
+﻿  PE.cpp
+D:\Code\C\PETool\PETool\PE.cpp(16,15): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  PETool.vcxproj -> D:\Code\C\PETool\Debug\PETool.exe
