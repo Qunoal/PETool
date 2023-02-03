@@ -130,13 +130,105 @@ void printSection(PE* pe) {
 	}
 }
 void printExportTable(PE* pe) {
+	int etAddr = pe->ope->DataDirectory[0].VirtualAddress;
+	if (etAddr == 0) {
+		printf("该pe结构没有导出表\n");
+		return;
+	}
+	ExportTable et = *(ExportTable*)rvaToFoa(pe, etAddr);
+	printf("\n");
+	printf("===========================> Export Table \n");
+	printf("Characteristics       : %x\n", et.Characteristics);
+	printf("TimeDateStamp         : %x\n", et.TimeDateStamp);
+	printf("MajorVersion          : %x\n", et.MajorVersion);
+	printf("MinorVersion          : %x\n", et.MinorVersion);
+	printf("Name                  : %x\n", et.Name);
+	printf("Base                  : %x\n", et.Base);
+	printf("NumberOfFunction      : %x\n", et.NumberOfFunction);
+	printf("NumberOfNames         : %x\n", et.NumberOfNames);
+	printf("AddressOfFunction     : %x\n", et.AddressOfFunction);
+	printf("AddressOfNames        : %x\n", et.AddressOfNames);
+	printf("AddressOfNameOrdinals : %x\n", et.AddressOfNameOrdinals);
+
+	int* functions = (int*)rvaToFoa(pe, et.AddressOfFunction);
+	short* ordinals = (short*)rvaToFoa(pe, et.AddressOfNameOrdinals);
+	int* names = (int*)rvaToFoa(pe, et.AddressOfNames);
+
+	printf("========> AddressOfFunction\n");
+	for (int i = 0; i < et.NumberOfFunction; i++) {
+		printf("%x \n", functions[i] + pe->ope->ImageBase);
+	}
+	printf("========> AddressOfNames\n");
+	for (int i = 0; i < et.NumberOfNames; i++) {
+		char* methods = (char*)rvaToFoa(pe, names[i]);
+		printf("%s \n", methods);
+	}
+	printf("========> AddressOfNameOrdinals\n");
+	for (int i = 0; i < et.NumberOfNames; i++) {
+		printf("%x \n", ordinals[i]);
+	}
+	
+	printf("-----------------------------------------------\n");
+	printf("   %-10s    %-10s    %-10s  \n", "Number", "RVA", "Function Name");
+	printf("-----------------------------------------------\n");
+	int ord = -1;
+	for (int i = 0; i < et.NumberOfFunction; i++) {
+		int addr = functions[i];
+		char* name = (char*)"-";
+		for (int j = 0; j < et.NumberOfNames; j++) {
+			if (ordinals[j] == i) {
+				ord = ordinals[j];
+				name = (char*)rvaToFoa(pe, names[j]);
+				break;
+			}
+		}
+		if (addr != 0) {
+			if (ord == -1) {
+				printf("   %-10d    %-10X    %-10s   \n", 0, addr, name);
+			}
+			else {
+				printf("   %-10d    %-10X    %-10s   \n", ord + et.Base, addr, name);
+			}
+		}
+		ord = -1;
+	}
+	printf("-----------------------------------------------\n");
 }
 void printRelocationTable(PE* pe); 
 void printImportTable(PE* pe, int isShowRepairAfter); 
 void printBoundImport(PE* pe);   
 //===============================================================
-void* rvaToFoa(PE* pe, int rva);
-void* foaToRva(PE* pe, int foa);
+void* rvaToFoa(PE* pe, int rva) {
+	if (rva == 0) return 0;
+	Sections* sec = pe->sections;
+	for (int i = 0; i < pe->pe->NumberOfSections; i++){
+		int start = sec->VirtualAddress;
+		int end   = sec->VirtualAddress + sec->VirtualSize ;
+		if (rva >= start &&  rva <= end ) {
+			return (void*)(sec->PointerToRawData + (rva - start) + (char*)pe->dos);
+		}
+		sec++;
+	}
+	printf("未找到改rva对应的foa\n");
+	return 0;
+}
+void* foaToRva(PE* pe, int foa) {
+	if (foa == 0) return 0;
+
+	foa = foa - (int)pe->dos;
+	Sections* sec = pe->sections;
+	for (int i = 0; i < pe->pe->NumberOfSections; i++) {
+		int start = sec->PointerToRawData;
+		int end   = sec->PointerToRawData + sec->VirtualSize;
+		if (foa >= start && foa <= end) {
+			// 找到对应文件的偏移地址
+			return (void*)(sec->VirtualAddress + (foa - start));
+		}
+		sec++;
+	}
+	printf("未找到改foa对应的rva\n");
+	return 0;
+}
 void memoryInit(char* addr, int size, char value) {
 	while (size--) *addr++ = value;
 }

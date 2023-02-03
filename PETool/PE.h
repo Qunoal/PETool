@@ -75,7 +75,7 @@ struct OptPeHeader {
 		unsigned int VirtualAddress;
 		unsigned int Size;
 	} DataDirectory[16];
-};// PE头
+};
 /**
  * 节表
  */ 
@@ -137,6 +137,10 @@ struct PE {
 
 PE getPE(char* buffer);
 PE getPE(const char* filePath);
+void* getFunction(PE* pe,int number);
+void* getFunction(PE* pe,const char* functionName);
+int injectShellCode(PE pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen);
+PE addNewSection(PE pe, int newSectionSize);
 
 // ================= Print Function =====================
 void printDosHead(PE* pe);        // 打印输出：dos头

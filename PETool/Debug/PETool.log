@@ -1,3 +1,8 @@
 ﻿  PE.cpp
-D:\Code\C\PETool\PETool\PE.cpp(16,15): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-  PETool.vcxproj -> D:\Code\C\PETool\Debug\PETool.exe
+D:\Code\C\project\PETool\PETool\PE.cpp(16,15): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Code\C\project\PETool\PETool\PE.cpp(158,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(162,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(167,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(175,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(178,21): warning C4018: “<”: 有符号/无符号不匹配
+  PETool.vcxproj -> D:\Code\C\project\PETool\Debug\PETool.exe
