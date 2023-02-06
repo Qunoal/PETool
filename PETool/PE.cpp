@@ -10,13 +10,21 @@ PE getPE(char* buffer) {
 	pe.pe = (PeHeader*)(buffer + pe.dos->e_lfanew);
 	pe.ope = (OptPeHeader*)(buffer + pe.dos->e_lfanew + 24);
 	pe.sections = (Sections*)(buffer + pe.dos->e_lfanew + 24 + pe.pe->SizeOfOptionalHeader);
+
+	// 校验文件合规性
+	if (pe.dos->e_magic != 0x5A4D && pe.pe->Signature != 0x00004550) {
+		printf("该文件不是一个有效的PE结构\n");
+		exit(0);
+	}
+
 	return pe;
 }
-PE getPE(const char* filePath) {
+PE getPE(const char* filePath,int* fileSize) {
 	FILE* file = fopen(filePath, "rb");
 	if (file == NULL) exit(1);
 	fseek(file, 0, SEEK_END);
 	int fileBufferSize = ftell(file);
+	*fileSize = fileBufferSize;
 	fseek(file, 0, SEEK_SET);
 
 	// 申请堆空间,初始化：0
@@ -28,8 +36,84 @@ PE getPE(const char* filePath) {
 	fclose(file);
 	return getPE(buffer);
 }
+int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen) {
+	// 1.将callAddress数组中的地址填充进shellcode的 E8(call) 中
+	int count = 0;
+	for (int i = 0; i < shellCodeLen; i++){
+		unsigned char* next = (unsigned char*)(shellCode + i);
+		if (*next == 0xE8) {
+			*(int*)(next + 1) = callAddress[count];
+			count++;
+			i += 4;
+		}
+	}
 
+	// 2.Inject And Update Call(E8) 
+	memoryCopy(shellCode, injectPoint, shellCodeLen);
+	char* buffer = (char*)pe->dos;
+	for (int i = 0; i < shellCodeLen; i++) {
+		unsigned char* t = (unsigned char*)injectPoint + i;
+		if (*t == 0xE8) {
+			int jumAdd = *(int*)(t + 1);  // E8里面写的目标地址
+			int callNextAdd = ((int)(t + 5)) - ((int)buffer) + pe->ope->ImageBase;
+			int finalAdd = jumAdd - callNextAdd; // 转换成最终的地址
+			*(int*)(t + 1) = finalAdd;           // 修正地址
+			i += 4; // 优化循环
+		}
+	}
 
+	// 3. Append Jmp old OEP Jmp到原来的程序入口
+	char* last = (injectPoint + shellCodeLen);
+	*last++ = 0xE9; // Jmp
+	*(int*)last = (pe->ope->AddressOfEntryPoint + pe->ope->ImageBase) - (((int)(last + 4) - (int)buffer) + pe->ope->ImageBase);
+
+	// 4.修改OEP,指向 ShellCode
+	pe->ope->AddressOfEntryPoint = (injectPoint - buffer); // rva
+	printf(">>>>>>>>>>>>>>>>>>>>>>> 注入成功 >>>>>>>>>>>>>>>>>>>>>>>>>");
+
+	return 1;
+}
+PE addNewSection(PE* pe, int oldFileSize, int newSectionSize,const char* newSectionName) {
+	// 检测剩余空间是否能够容纳新增节表
+	int sectionAfter = (int)(pe->sections + pe->pe->NumberOfSections);
+	int headersValidLength = pe->ope->SizeOfHeaders - (sectionAfter - (int)pe->dos);
+
+	if (headersValidLength >= (2 * sizeof(Sections))) {
+		int fileBufferSize = oldFileSize + newSectionSize;
+		char* newBuffer = (char*)malloc(fileBufferSize);
+		memoryInit(newBuffer, fileBufferSize, 0);
+		memoryCopy((char*)pe->dos, newBuffer, oldFileSize);
+
+		PE newPE = getPE(newBuffer);
+		// 1.找到节点末尾,并拷贝节
+		char* newSectionAfter = (char*)(newPE.sections +newPE.pe->NumberOfSections);
+		memoryCopy((char*)(pe->sections), newSectionAfter, sizeof(Sections));
+
+		// 2.修改新增节的属性
+		Sections* newNode = (Sections*)newSectionAfter;
+		Sections* lastNode = newNode - 1;
+		char sectionName[8] = { 0 };
+		int nameLen = strLen((char*)newSectionName);
+		nameLen >= 8 ? memoryCopy((char*)newSectionName, sectionName, 8) : memoryCopy((char*)newSectionName, sectionName, nameLen);
+
+		memoryCopy(sectionName, (char*)newNode->name, 8);
+		newNode->VirtualSize = newSectionSize;
+		newNode->VirtualAddress = lastNode->VirtualAddress + lastNode->SizeOfRawData;
+		newNode->SizeOfRawData = newSectionSize;
+		newNode->PointerToRawData = lastNode->PointerToRawData + lastNode->SizeOfRawData;
+
+		// 3.修改pe头,可选pe头信息
+		newPE.pe->NumberOfSections++; // 新增一个节 
+		newPE.ope->SizeOfImage += newSectionSize;
+		return newPE;
+	} else {
+		printf("新增节失败，空余空间不足\n");
+	}
+
+	return {0};
+}
+
+int capacityLastSection(PE* pe, int increment);
 
 
 //===============================================================
@@ -195,7 +279,7 @@ void printExportTable(PE* pe) {
 	printf("-----------------------------------------------\n");
 }
 void printRelocationTable(PE* pe); 
-void printImportTable(PE* pe, int isShowRepairAfter); 
+void printImportTable(PE* pe, int isShowRepairAfter);
 void printBoundImport(PE* pe);   
 //===============================================================
 void* rvaToFoa(PE* pe, int rva) {
@@ -243,6 +327,12 @@ int strLen(char* s1) {
 	int i = 0;
 	while (*s1++) i++;
 	return i;
+}
+void savePEToFile(PE* pe,const char* path,int fileSize) {
+	FILE* file = fopen(path, "wb");
+	char* buffer = (char*)pe->dos;
+	fwrite(buffer, 1, fileSize, file);
+	fclose(file);
 }
 void closePE(PE* pe) {
 	free(pe->dos);

@@ -135,14 +135,21 @@ struct PE {
 	Sections* sections;
 };
 
+// ===================================== PE Function ===============================================
 PE getPE(char* buffer);
-PE getPE(const char* filePath);
-void* getFunction(PE* pe,int number);
-void* getFunction(PE* pe,const char* functionName);
-int injectShellCode(PE pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen);
-PE addNewSection(PE pe, int newSectionSize);
+PE getPE(const char* filePath, int* fileSize);
+int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen);
+PE addNewSection(PE* pe, int oldFileSize, int newSectionSize, const char* newSectionName);
+int capacityLastSection(PE* pe, int increment);
+int mergeSection(PE* pe);
+int moveExportTable(PE* pe, char* dest);
+int moveRelocationTable(PE* pe, char* dest);
+int moveImportTable(PE pe, char* dest);
+void repairRelocationTable(PE pe, int newImageBase);
+void repairINT(PE pe, char* dllName, int* INT, int* IAT);
+int injectDllToImportTable(PE pe, char* dllName, char* functionName);
 
-// ================= Print Function =====================
+// ======================================= Print =================================================== 
 void printDosHead(PE* pe);        // 打印输出：dos头
 void printPeHead(PE* pe);         // 打印输出：pe头
 void printOptPeHead(PE* pe);      // 打印输出：可选pe头
@@ -152,11 +159,16 @@ void printRelocationTable(PE* pe);// 打印输出：重定位表
 void printImportTable(PE* pe, int isShowRepairAfter);// 打印输出：导入表
 void printBoundImport(PE* pe);    // 打印输出：绑定导入表
 
-// ================= Tools Function =====================
+//===================================  Tools Function ==============================================
 void* rvaToFoa(PE* pe, int rva);
 void* foaToRva(PE* pe, int foa);
+void* getFunction(PE* pe, int number);
+void* getFunction(PE* pe, const char* functionName);
+
 void memoryInit(char* addr, int size, char value);
 void memoryCopy(char* srcAddr, char* destAddr,int size);
 int strEq(char* s1, char* s2);
 int strLen(char* s1);
+void savePEToFile(PE* pe, const char* path, int fileSize);
 void closePE(PE* pe);
+
