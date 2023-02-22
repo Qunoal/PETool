@@ -11,6 +11,8 @@ PE getPE(char* buffer) {
 	pe.ope = (OptPeHeader*)(buffer + pe.dos->e_lfanew + 24);
 	pe.sections = (Sections*)(buffer + pe.dos->e_lfanew + 24 + pe.pe->SizeOfOptionalHeader);
 
+	Sections* lastSec = pe.sections + pe.pe->NumberOfSections - 1;
+	pe.peSize = lastSec->PointerToRawData + lastSec->SizeOfRawData;
 	// 校验文件合规性
 	if (pe.dos->e_magic != 0x5A4D && pe.pe->Signature != 0x00004550) {
 		printf("该文件不是一个有效的PE结构\n");
@@ -19,12 +21,12 @@ PE getPE(char* buffer) {
 
 	return pe;
 }
-PE getPE(const char* filePath,int* fileSize) {
+PE getPE(const char* filePath) {
 	FILE* file = fopen(filePath, "rb");
 	if (file == NULL) exit(1);
 	fseek(file, 0, SEEK_END);
 	int fileBufferSize = ftell(file);
-	*fileSize = fileBufferSize;
+
 	fseek(file, 0, SEEK_SET);
 
 	// 申请堆空间,初始化：0
@@ -34,7 +36,31 @@ PE getPE(const char* filePath,int* fileSize) {
 	fread(buffer, 1, fileBufferSize, file);
 	// 关闭文件
 	fclose(file);
-	return getPE(buffer);
+
+	PE p = getPE(buffer);
+	p.peSize = fileBufferSize;
+	return p ;
+}
+PE loadImageBuffer(PE* pe) {
+	char* fileBuffer = (char*)pe->dos;
+	char* impageBuffer = (char*)malloc(pe->ope->SizeOfImage);
+	
+	// copy handers 
+	memoryInit(impageBuffer, pe->ope->SizeOfImage, 0);
+	memoryCopy(fileBuffer, impageBuffer, pe->ope->SizeOfHeaders);
+
+	// copy sections 
+	Sections* s = pe->sections;
+	for (int i = 0; i < pe->pe->NumberOfSections; i++) {
+		char* start = s->PointerToRawData + fileBuffer;
+		char* targe = s->VirtualAddress   + impageBuffer;
+		int copySize = (s->SizeOfRawData > s->VirtualSize) ? s->SizeOfRawData : s->VirtualSize;
+		memoryCopy(start, targe, copySize);
+		s++;
+	}
+	PE p = getPE(impageBuffer);
+	p.peSize = pe->ope->SizeOfImage;
+	return p;
 }
 int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen) {
 	// 1.将callAddress数组中的地址填充进shellcode的 E8(call) 中
@@ -69,22 +95,26 @@ int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[
 
 	// 4.修改OEP,指向 ShellCode
 	pe->ope->AddressOfEntryPoint = (injectPoint - buffer); // rva
-	printf(">>>>>>>>>>>>>>>>>>>>>>> 注入成功 >>>>>>>>>>>>>>>>>>>>>>>>>");
+	printf(">>>>>>>>>>>>>>>>>>>>>>> 注入成功 >>>>>>>>>>>>>>>>>>>>>>>>>\n");
 
 	return 1;
 }
-PE addNewSection(PE* pe, int oldFileSize, int newSectionSize,const char* newSectionName) {
+PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName) {
 	// 检测剩余空间是否能够容纳新增节表
-	int sectionAfter = (int)(pe->sections + pe->pe->NumberOfSections);
-	int headersValidLength = pe->ope->SizeOfHeaders - (sectionAfter - (int)pe->dos);
+	int lastSectionAfter = (int)(pe->sections + pe->pe->NumberOfSections);
+	int headersValidLength = pe->ope->SizeOfHeaders - (lastSectionAfter - (int)pe->dos);
 
+	PE newPE;
 	if (headersValidLength >= (2 * sizeof(Sections))) {
-		int fileBufferSize = oldFileSize + newSectionSize;
+		int fileBufferSize = pe->peSize + newSectionSize;
 		char* newBuffer = (char*)malloc(fileBufferSize);
-		memoryInit(newBuffer, fileBufferSize, 0);
-		memoryCopy((char*)pe->dos, newBuffer, oldFileSize);
 
-		PE newPE = getPE(newBuffer);
+		memoryInit(newBuffer, fileBufferSize, 0);
+		memoryCopy((char*)pe->dos, newBuffer, pe->peSize);
+
+		newPE = getPE(newBuffer);
+		newPE.peSize = fileBufferSize;
+
 		// 1.找到节点末尾,并拷贝节
 		char* newSectionAfter = (char*)(newPE.sections +newPE.pe->NumberOfSections);
 		memoryCopy((char*)(pe->sections), newSectionAfter, sizeof(Sections));
@@ -105,16 +135,150 @@ PE addNewSection(PE* pe, int oldFileSize, int newSectionSize,const char* newSect
 		// 3.修改pe头,可选pe头信息
 		newPE.pe->NumberOfSections++; // 新增一个节 
 		newPE.ope->SizeOfImage += newSectionSize;
-		return newPE;
 	} else {
 		printf("新增节失败，空余空间不足\n");
 	}
-
-	return {0};
+	return newPE;
 }
+PE capacityLastSection(PE* pe, int increment) {
+	int oldSizeOfImage = pe->ope->SizeOfImage;
+		
+	// 1、分配一块新的空间：SizeOfImage + Ex
+	char* newBuffer = (char*)malloc(oldSizeOfImage + increment);
+	memoryInit(newBuffer, oldSizeOfImage, 0);
+	memoryCopy((char*)pe->dos, newBuffer, pe->peSize);
 
-int capacityLastSection(PE* pe, int increment);
+	PE newPE = getPE(newBuffer);
+	newPE.peSize += increment;
 
+	// 3、将最后一个节的 SizeOfRawData 和 VirtualSize 扩容 
+	//    SizeOfRawData = N and VirtualSize = N 
+	//    N = (SizeOfRawData或者VirtualSize 内存对齐后的值) + Ex
+	Sections* lastSection = newPE.sections + (newPE.pe->NumberOfSections - 1);
+	lastSection->SizeOfRawData += increment;
+	lastSection->VirtualSize += increment;
+
+	// 4、修改 SizeOfImage 大小
+	newPE.ope->SizeOfImage += increment;
+	return newPE;
+}
+PE mergeSection(PE* pe) {
+	// 1、拉伸到内存
+	PE loadedPE = loadImageBuffer(pe);
+
+	// 2、将第一个节的内存大小、文件大小改成一样
+	Sections* lastSec = loadedPE.sections + (loadedPE.pe->NumberOfSections - 1);
+	int max = (lastSec->SizeOfRawData > lastSec->VirtualSize) ? lastSec->SizeOfRawData : lastSec->VirtualSize;
+	int totalSize = lastSec->VirtualAddress + max - loadedPE.ope->SizeOfHeaders;
+	
+	loadedPE.sections->VirtualSize = totalSize;
+	loadedPE.sections->SizeOfRawData = totalSize;
+
+	// 3、将第一个节的属性改为包含所有节的属性,所有节的 Characteristics 全部按位或在一起
+	Sections* s = loadedPE.sections;
+	for (int i = 1; i < loadedPE.pe->NumberOfSections; i++) {
+		s->Characteristics |= (s + i)->Characteristics;
+	}
+	
+	// 4、修改节的数量为1
+	loadedPE.pe->NumberOfSections = 1;
+
+	return loadedPE;
+}
+int moveExportTable(PE* pe, char* dest){
+	ExportTable* et = (ExportTable*)rvaToFoa(pe, pe->ope->DataDirectory[0].VirtualAddress);
+	if (et == NULL) {
+		printf("没找到导出表，导出表移动失败\n");
+		return 0; // 结束该方法
+	}
+
+	// 开始移动 ==============>
+	int funcAddRva = et->AddressOfFunction;
+	int funcNum = et->NumberOfFunction;
+	int OrdiAddRva = et->AddressOfNameOrdinals;
+	int nameAddRva = et->AddressOfNames;
+	int nameNum = et->NumberOfNames;
+	int funcNeedSpaceSize = 4 * et->NumberOfFunction;
+	int ordinalNeedSpaceSize = 2 * et->NumberOfNames;
+	int namesNeedSpaceSize = 4 * et->NumberOfNames;
+
+	// 1.先移动函数地址
+	char* funcList = (char*)rvaToFoa(pe, funcAddRva);
+	memoryCopy(funcList, dest, funcNeedSpaceSize);
+
+	// 2.再移序号表
+	char* ordinalList = (char*)rvaToFoa(pe, OrdiAddRva);
+	memoryCopy(ordinalList, (char*)(dest + funcNeedSpaceSize), ordinalNeedSpaceSize);
+
+	// 3.移动名字表
+	// 名字地址指针
+	int* nameNewRva = (int*)(dest + funcNeedSpaceSize + ordinalNeedSpaceSize);
+	// 定位名字存放位置,跳过name地址表,追加在name地址表后面
+	char* nameNext = (char*)(dest + funcNeedSpaceSize + ordinalNeedSpaceSize + namesNeedSpaceSize);
+
+	// 函数名长度统计 
+	int nameAllLen = 0;
+	// 处理函数名表
+	int* nameTableRva = (int*)rvaToFoa(pe, nameAddRva);
+	for (int i = 0; i < nameNum; i++) {
+		char* nameString = (char*)rvaToFoa(pe, nameTableRva[i]);
+		int nameLen = strLen(nameString) + 1; // +1为了把\0也给拷过来
+		memoryCopy(nameString, nameNext, nameLen);
+		// 修复 AddressOfNames 表中的 rva
+		*nameNewRva++ = (int)foaToRva(pe, (int)nameNext);
+		nameNext += nameLen;
+		
+		// 统计名字占用多少空间
+		nameAllLen += nameLen;
+	}
+
+	// 4.移动表结构，并修复rva
+	memoryCopy((char*)et, nameNext, sizeof(ExportTable));
+	ExportTable* moveAfter = (ExportTable*)nameNext;
+	moveAfter->AddressOfFunction = (int)foaToRva(pe, (int)dest);
+	moveAfter->AddressOfNameOrdinals = (int)foaToRva(pe, (int)(dest + funcNeedSpaceSize));
+	moveAfter->AddressOfNames = (int)foaToRva(pe, (int)(dest + funcNeedSpaceSize + ordinalNeedSpaceSize));
+
+	// 5.修改 ope目录 VirtualAddress 指向
+	pe->ope->DataDirectory[0].VirtualAddress = (int)foaToRva(pe, (int)moveAfter);
+	// 完成移动 ==============>
+
+	// 记录导出表所有数据总长度,存在节点开始位置
+	return nameAllLen + (sizeof(ExportTable) + funcNeedSpaceSize + ordinalNeedSpaceSize + namesNeedSpaceSize);
+}
+int moveRelocationTable(PE* pe, char* dest) {
+	int* relocation = (int*)rvaToFoa(pe, pe->ope->DataDirectory[5].VirtualAddress);
+	if (*relocation == 0) {
+		printf("没有重定位表 移动失败~ \n");
+		return 0;
+	}
+
+	int totalSize = 0;
+	int* ip = relocation;
+	int virtualAddress = 0;
+	int sizeOfBlock = 0;
+
+	do {
+		virtualAddress = ip[0];
+		sizeOfBlock = ip[1];
+		// if防止第一次为0
+		if (virtualAddress != 0 && sizeOfBlock != 0) {
+			totalSize += sizeOfBlock;
+			ip = (int*)(((char*)ip) + sizeOfBlock); // 切换到下一个block
+		}
+	} while (virtualAddress != 0 && sizeOfBlock != 0);
+	// 手动加上8个结束标记
+	totalSize += 8;
+	memoryCopy((char*)relocation, dest, totalSize);
+
+	// 修改目录项指向
+	pe->ope->DataDirectory[5].VirtualAddress = (int)foaToRva(pe, (int)dest);
+
+	return totalSize;
+}
+int moveImportTable(PE pe, char* dest) {
+	return 0;
+}
 
 //===============================================================
 void printDosHead(PE* pe) {
@@ -238,13 +402,19 @@ void printExportTable(PE* pe) {
 	short* ordinals = (short*)rvaToFoa(pe, et.AddressOfNameOrdinals);
 	int* names = (int*)rvaToFoa(pe, et.AddressOfNames);
 
+	int funcNeedSpaceSize = 4 * et.NumberOfFunction;
+	int ordinalNeedSpaceSize = 2 * et.NumberOfNames;
+	int namesNeedSpaceSize = 4 * et.NumberOfNames;
+	int funcNameAll = 0;
+
 	printf("========> AddressOfFunction\n");
 	for (int i = 0; i < et.NumberOfFunction; i++) {
-		printf("%x \n", functions[i] + pe->ope->ImageBase);
+		printf("%x \n", functions[i]);
 	}
 	printf("========> AddressOfNames\n");
 	for (int i = 0; i < et.NumberOfNames; i++) {
 		char* methods = (char*)rvaToFoa(pe, names[i]);
+		funcNameAll += strLen(methods) + 1;
 		printf("%s \n", methods);
 	}
 	printf("========> AddressOfNameOrdinals\n");
@@ -277,8 +447,51 @@ void printExportTable(PE* pe) {
 		ord = -1;
 	}
 	printf("-----------------------------------------------\n");
+	printf("expor Table Total Size: %x \n",(funcNameAll + funcNeedSpaceSize + ordinalNeedSpaceSize + namesNeedSpaceSize + sizeof(ExportTable)));
 }
-void printRelocationTable(PE* pe); 
+void printRelocationTable(PE* pe) {
+	int* rt = (int*)rvaToFoa(pe,pe->ope->DataDirectory[5].VirtualAddress);
+	if (rt == 0) {
+		printf("没有导入表\n");
+		return;
+	}
+	int* ip = rt;
+	int virtualAddress = 0;
+	int sizeOfBlock = 0;
+	int number = 0;
+
+	do {
+		virtualAddress = ip[0];
+		sizeOfBlock = ip[1];
+		number++;
+
+		printf("====================  Block : %d =================\n", number);
+		printf("===> VirtualAddress: %x\n", virtualAddress);
+		printf("===> SizeOfBlock   : %x\n", sizeOfBlock);
+		if (virtualAddress != 0 && sizeOfBlock != 0) {
+			short* sp = (short*)(ip + 2);
+			// 1. 高4位代表类型：
+			// 	 1. 值为3 代表的是需要修改的数据
+			// 	 2. 值为0	代表的是用于数据对齐的数据，可以不用修改
+			// 2. 第12位开始后代表的是需要重定位的值(rva) + 结构块的 VirtualAddress = 真正要修复的地址
+			for (int i = 0; i < (sizeOfBlock - 8) / 2; i++) {
+				short v = *(sp + i);
+				if (v != 0 && (v & 0x3FFF) == v) {
+					printf("%x > %x > %x -> %x\t\t", v, (v & 0x0FFF), (v & 0x0FFF) + virtualAddress, (v & 0x0FFF) + virtualAddress + pe->ope->ImageBase);
+				}else {
+					printf("%x", v);
+				}
+				// 换行 方便阅读
+				if ((i + 1) % 2 == 0) {
+					printf("\n");
+				}
+			}
+		}
+		printf("=================  END Block : %d  =================\n\n", number);
+		ip = (int*)(((char*)ip) + sizeOfBlock); // 切换到下一个block
+	} while (virtualAddress != 0 && sizeOfBlock != 0);
+
+}
 void printImportTable(PE* pe, int isShowRepairAfter);
 void printBoundImport(PE* pe);   
 //===============================================================
@@ -313,6 +526,38 @@ void* foaToRva(PE* pe, int foa) {
 	printf("未找到改foa对应的rva\n");
 	return 0;
 }
+void* getFunction(PE* pe, int number) {
+	ExportTable* et = (ExportTable*)rvaToFoa(pe, pe->ope->DataDirectory[0].VirtualAddress);
+
+	int* names = (int*)rvaToFoa(pe, et->AddressOfNames);
+	short* ordis = (short*)rvaToFoa(pe, et->AddressOfNameOrdinals);
+	int* funcs = (int*)rvaToFoa(pe, et->AddressOfFunction);
+
+	// 按照序号查找
+	int base = number - et->Base;
+	if (base < et->NumberOfFunction) {
+		return (void*)(funcs[base] + pe->ope->ImageBase);
+	}
+	return 0; // 没找到
+}
+void* getFunction(PE* pe, const char* functionName) {
+	ExportTable* et = (ExportTable*)rvaToFoa(pe, pe->ope->DataDirectory[0].VirtualAddress);
+
+	int* names = (int*)rvaToFoa(pe, et->AddressOfNames);
+	short* ordis = (short*)rvaToFoa(pe, et->AddressOfNameOrdinals);
+	int* funcs = (int*)rvaToFoa(pe, et->AddressOfFunction);
+
+	// 按照名字查找
+	for (int i = 0; i < et->NumberOfNames; i++) {
+		char* funcName = (char*)rvaToFoa(pe, *(names + i));
+		if (strEq(funcName, (char*)functionName)) {
+			return (void*)(funcs[ordis[i]] + pe->ope->ImageBase);
+		}
+	}
+		
+	return 0;  // 没找到
+}
+
 void memoryInit(char* addr, int size, char value) {
 	while (size--) *addr++ = value;
 }
@@ -328,12 +573,15 @@ int strLen(char* s1) {
 	while (*s1++) i++;
 	return i;
 }
-void savePEToFile(PE* pe,const char* path,int fileSize) {
+void savePEToFile(PE* pe,const char* path) {
 	FILE* file = fopen(path, "wb");
 	char* buffer = (char*)pe->dos;
-	fwrite(buffer, 1, fileSize, file);
+	fwrite(buffer, 1, pe->peSize, file);
 	fclose(file);
 }
 void closePE(PE* pe) {
 	free(pe->dos);
 }
+
+
+ 

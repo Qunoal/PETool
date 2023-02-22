@@ -71,10 +71,29 @@ struct OptPeHeader {
 	unsigned int SizeOfHeapCommit;
 	unsigned int LoaderFlags;
 	unsigned int NumberOfRvaAndSizes;
+	/**
+	*  0: 导出表
+	*  1: 导入表
+	*  2: 资源表
+	*  3: 异常信息表
+	*  4: 安全证书表
+	*  5: 重定位表
+	*  6: 调试信息表
+	*  7: 版权所以表
+	*  8: 全局指针表 
+	*  9: TLS表
+	*  10: 加载配置表
+	*  11: 绑定导入表
+	*  12: IAT表
+	*  13: 延迟导入表
+	*  14: COM表
+	*  15: 保留表
+	*/ 
 	struct {
 		unsigned int VirtualAddress;
 		unsigned int Size;
 	} DataDirectory[16];
+	
 };
 /**
  * 节表
@@ -126,25 +145,47 @@ struct BoundImport {
 	unsigned short NumberOfModule;
 };
 /**
- * 总结构
+ * PE结构
  */ 
 struct PE {
 	DosHeader* dos;
 	PeHeader* pe;
 	OptPeHeader* ope;
 	Sections* sections;
+	int peSize;
 };
 
 // ===================================== PE Function ===============================================
 PE getPE(char* buffer);
-PE getPE(const char* filePath, int* fileSize);
+PE getPE(const char* filePath);
+PE loadImageBuffer(PE* pe);
 int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen);
-PE addNewSection(PE* pe, int oldFileSize, int newSectionSize, const char* newSectionName);
-int capacityLastSection(PE* pe, int increment);
-int mergeSection(PE* pe);
+PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName);
+PE capacityLastSection(PE* pe, int increment);
+/**
+* @param pe 需要合并的PE结构
+* @return   一个新的PE结构
+*/
+PE mergeSection(PE* pe);
+/**
+* @param pe   含导出表的PE结构
+* @param dest 移动的目的地(pe结构内的地址)
+* @return int 导出表共多少字节
+*/
 int moveExportTable(PE* pe, char* dest);
+/**
+* @param pe   含导出表的PE结构
+* @param dest 移动的目的地(pe结构内的地址)
+* @return int 导出表共多少字节
+*/
 int moveRelocationTable(PE* pe, char* dest);
+/**
+* @param pe   含导出表的PE结构
+* @param dest 移动的目的地(pe结构内的地址)
+* @return int 导出表共多少字节
+*/
 int moveImportTable(PE pe, char* dest);
+
 void repairRelocationTable(PE pe, int newImageBase);
 void repairINT(PE pe, char* dllName, int* INT, int* IAT);
 int injectDllToImportTable(PE pe, char* dllName, char* functionName);
@@ -169,6 +210,6 @@ void memoryInit(char* addr, int size, char value);
 void memoryCopy(char* srcAddr, char* destAddr,int size);
 int strEq(char* s1, char* s2);
 int strLen(char* s1);
-void savePEToFile(PE* pe, const char* path, int fileSize);
+void savePEToFile(PE* pe, const char* path);
 void closePE(PE* pe);
 
