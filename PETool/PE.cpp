@@ -23,7 +23,10 @@ PE getPE(char* buffer) {
 }
 PE getPE(const char* filePath) {
 	FILE* file = fopen(filePath, "rb");
-	if (file == NULL) exit(1);
+	if (file == NULL) {
+		printf("%s 文件读取失败",filePath);
+		exit(0);
+	}
 	fseek(file, 0, SEEK_END);
 	int fileBufferSize = ftell(file);
 
@@ -99,7 +102,7 @@ int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[
 
 	return 1;
 }
-PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName) {
+PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName,int* startPoint) {
 	// 检测剩余空间是否能够容纳新增节表
 	int lastSectionAfter = (int)(pe->sections + pe->pe->NumberOfSections);
 	int headersValidLength = pe->ope->SizeOfHeaders - (lastSectionAfter - (int)pe->dos);
@@ -132,9 +135,11 @@ PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName) {
 		newNode->SizeOfRawData = newSectionSize;
 		newNode->PointerToRawData = lastNode->PointerToRawData + lastNode->SizeOfRawData;
 
+		*startPoint = (int)(newNode->PointerToRawData + (char*)newPE.dos);
 		// 3.修改pe头,可选pe头信息
 		newPE.pe->NumberOfSections++; // 新增一个节 
 		newPE.ope->SizeOfImage += newSectionSize;
+
 	} else {
 		printf("新增节失败，空余空间不足\n");
 	}
@@ -276,8 +281,154 @@ int moveRelocationTable(PE* pe, char* dest) {
 
 	return totalSize;
 }
-int moveImportTable(PE pe, char* dest) {
-	return 0;
+int moveImportTable(PE* pe, char* dest) {
+	pe->ope->DataDirectory[12].VirtualAddress = 0;
+	ImportTable* oldIt = (ImportTable*)rvaToFoa(pe, pe->ope->DataDirectory[1].VirtualAddress);
+	if ((int)oldIt == 0) {
+		printf("没有导入表，移动失败\n-------------------------------------\n");
+		return 0;
+	}
+
+	// 导入表所有数据的总长度
+	int totalLen = 0; 
+
+
+	// 初始化全零结构
+	int ITNeedSpace = sizeof(ImportTable) * 1; 
+
+	// 1. 统计导入表的大小
+	for (ImportTable* i = oldIt; (i->FirstThunk != 0 && i->Name != 0 && i->OriginalFirstThunk != 0); i++) ITNeedSpace += sizeof(ImportTable);
+	
+	// 2.开始Copy 所有 导入表结构
+	memoryCopy((char*)oldIt, dest, ITNeedSpace);
+	totalLen += ITNeedSpace;
+
+
+	char* nextPtr = (char*)(dest + ITNeedSpace);
+
+	ImportTable* newIt = (ImportTable*)dest;
+	while(oldIt->FirstThunk != 0 && oldIt->Name != 0 && oldIt->OriginalFirstThunk != 0) {
+		
+		// 2.2 copy INT
+	
+		int* INT = (int*)rvaToFoa(pe, oldIt->OriginalFirstThunk);
+
+		// 计算出 INT 所需要的空间
+		int INTNeedSpace = 4;   // 全0结束标识
+		for (int* i = INT; *i!=0; i++) INTNeedSpace += 4;
+
+		int* newINT = (int*)nextPtr;
+		nextPtr += INTNeedSpace; 
+
+		// next指向INT起始位置
+		
+		int INTNumber = 0; // 0结尾
+		while (*INT) {
+			if (INT[0] & 0x80000000) {
+				// 四字节，带有序号
+				memoryCopy((char*)INT, (char*)(newINT + INTNumber), 4);
+			} else {
+				char* hit = (char*)rvaToFoa(pe, INT[0]);
+				int nameLen = strLen(hit+2) + 1 ;
+				memoryCopy(hit, nextPtr, nameLen);
+				*(newINT + INTNumber) = (int)foaToRva(pe, (int)hit);
+				totalLen += nameLen;
+				nextPtr += nameLen;
+				nextPtr += 2; // him
+			}
+			INT++;
+			INTNumber++;
+		}
+		
+		char* newIAT = nextPtr;
+		memoryCopy((char*)newINT, newIAT, INTNeedSpace);
+		nextPtr += INTNeedSpace;
+
+		// copy DllName 修复新表name的Rva
+		char* name = (char*)rvaToFoa(pe, oldIt->Name);
+		int dllNameLen = strLen(name) + 1; // + 1 拿字符串\0结尾
+		memoryCopy(name, nextPtr, dllNameLen);
+
+		newIt->OriginalFirstThunk = (int)foaToRva(pe, (int)newINT);
+		newIt->FirstThunk = (int)foaToRva(pe, (int)newIAT);
+		newIt->Name = (int)foaToRva(pe, (int)nextPtr);
+		pe->ope->DataDirectory[12];
+	
+		nextPtr += dllNameLen;
+		totalLen += dllNameLen;
+
+		oldIt++;
+		newIt++;
+	}
+
+	// 修改目录指向
+	pe->ope->DataDirectory[1].VirtualAddress = (int)foaToRva(pe, (int)dest);
+
+	return totalLen;
+}
+
+
+// 修复顺序，先修复重定位在修复INT
+void repairRelocationTable(PE* pe, int newImageBase) {
+	int* redirectTableStart = (int*)rvaToFoa(pe, pe->ope->DataDirectory[5].VirtualAddress);
+	if (redirectTableStart == 0) {
+		printf("没有导入表\n");
+		return;
+	}
+	int* ip = redirectTableStart;
+	int virtualAddress = 0;
+	int sizeOfBlock = 0;
+	int oldImageBase = pe->ope->ImageBase;
+
+	printf("\n修复后:\n");
+	do {
+		virtualAddress = ip[0];
+		sizeOfBlock = ip[1];
+		if (virtualAddress != 0 && sizeOfBlock != 0) {
+			short* sp = (short*)(ip + 2);
+			for (int i = 0; i < (sizeOfBlock - 8) / 2; i++) {
+				short v = *(sp + i);
+				if (v != 0 && (v & 0x3FFF) == v) {
+					int rva = (v & 0x0FFF) + virtualAddress;
+					int* updateAddr = (int*)rvaToFoa(pe, rva);
+					int value = *updateAddr;
+					*updateAddr = (value - oldImageBase) + newImageBase;
+					printf("%x > %x > %x(RVA) -> %x\t\t", v, (v & 0x0FFF), rva, *updateAddr);
+				}
+				if ((i + 1) % 2 == 0) {
+					printf("\n");
+				}
+			}
+			ip = (int*)(((char*)ip) + sizeOfBlock); // 切换到下一个block
+		}
+	} while (virtualAddress != 0 && sizeOfBlock != 0);
+}
+void repairINT(PE* pe, char* dllName, int* INT, int* IAT) {
+	// 修复过程
+	// PE dllPE = getPE((const char*)dllName);
+	int i = 0;
+	while (INT[i]) {
+		if ((INT[i] & 0x80000000) != 0) { // 序号
+			// int number = INT[i] & 0x0FFF;
+			// 按照序号从这个dll模块中查找，该导出的函数地址
+			// IAT[i] =  (int)getFunction(&dllPE, number);
+
+			// 模拟 修复
+			IAT[i] = 0x11223344;
+		}
+		else {
+			// RVA name
+			// char* name = ((char*)rvaToFoa(pe, INT[i])) + 2; // +2 跳过hint
+			// 按照名称从这个dll模块中查找，该导出的函数地址
+			// IAT[i] = (int)getFunction(&dllPE, name);
+
+			// 模拟 修复 IAT表
+			IAT[i] = 0x55667788;
+		}
+		i++;
+	}
+
+	//closePE(&dllPE);
 }
 
 //===============================================================
@@ -452,7 +603,7 @@ void printExportTable(PE* pe) {
 void printRelocationTable(PE* pe) {
 	int* rt = (int*)rvaToFoa(pe,pe->ope->DataDirectory[5].VirtualAddress);
 	if (rt == 0) {
-		printf("没有导入表\n");
+		printf("没有重定位表\n");
 		return;
 	}
 	int* ip = rt;
@@ -477,7 +628,9 @@ void printRelocationTable(PE* pe) {
 			for (int i = 0; i < (sizeOfBlock - 8) / 2; i++) {
 				short v = *(sp + i);
 				if (v != 0 && (v & 0x3FFF) == v) {
-					printf("%x > %x > %x -> %x\t\t", v, (v & 0x0FFF), (v & 0x0FFF) + virtualAddress, (v & 0x0FFF) + virtualAddress + pe->ope->ImageBase);
+					int rva = ((v & 0x0FFF) + virtualAddress);
+					int* foa = (int*)rvaToFoa(pe,rva);
+					printf("%x > %x > %x(RVA) -> [%x]\t\t", v, (v & 0x0FFF),rva, *foa);
 				}else {
 					printf("%x", v);
 				}
@@ -492,8 +645,84 @@ void printRelocationTable(PE* pe) {
 	} while (virtualAddress != 0 && sizeOfBlock != 0);
 
 }
-void printImportTable(PE* pe, int isShowRepairAfter);
-void printBoundImport(PE* pe);   
+void printImportTable(PE* pe, int isShowRepairAfter) {
+	printf("============ Import Table  ==========\n");
+	int count = 1;
+	ImportTable* it = (ImportTable*)rvaToFoa(pe, pe->ope->DataDirectory[1].VirtualAddress);
+	if (it == 0) {
+		printf("没有导入表\n");
+		return;
+	}
+	while (it->FirstThunk != 0 && it->Name != 0 && it->OriginalFirstThunk != 0) {
+		// DLL name 
+		char* dllName = (char*)rvaToFoa(pe, it->Name);
+		// INT表
+		int* INT = (int*)rvaToFoa(pe, it->OriginalFirstThunk);
+		// IAT表
+		int* IAT = (int*)rvaToFoa(pe, it->FirstThunk);
+
+		printf("\n\n======> %-20s No.%d\n", dllName,count);
+		printf("======> 运行前 \n");
+		int i = 0;
+		while (INT[i]) {
+			if ((INT[i] & 0x80000000) != 0) { // 序号
+				int number = INT[i] & 0x0FFF;
+				printf("===> INT:%8X - IAT(修复前):%-8X --> INA and IAT Value(Number)  : %d \n", INT[i], IAT[i], number);
+			}else {
+				// RVA name
+				char* name = ((char*)rvaToFoa(pe, INT[i])) + 2; // +2 跳过hint
+				printf("===> INT:%8X - IAT(修复前):%-8X --> INT and IAT Value(FuncName): %s \n", INT[i], IAT[i], name);
+			}
+			i++;
+		}
+
+		if (isShowRepairAfter) {
+			// 修复函数
+			repairINT(pe,dllName, INT, IAT);
+
+			printf("======> 运行后\n");
+			// 修复后输出 
+			i = 0;
+			while (INT[i]) {
+				if ((INT[i] & 0x80000000) != 0) { // 序号
+					int number = INT[i] & 0x0FFF;
+					printf("===> INT:%8X - IAT(修复后):%-8X --> INT Value(Number)  : %d    \n", INT[i], IAT[i], number);
+				}else {
+					// RVA name
+					char* name = ((char*)rvaToFoa(pe, INT[i])) + 2; // +2 跳过hint
+					printf("===> INT:%8X - IAT(修复后):%-8X --> INT Value(FuncName): %s  \n", INT[i], IAT[i], name);
+				}
+				i++;
+			}
+		}
+		it++;
+		count++;
+	}
+}
+void printBoundImport(PE* pe) {
+	BoundImport* firstBI = (BoundImport*)rvaToFoa(pe, pe->ope->DataDirectory[11].VirtualAddress);
+	if ((int)firstBI == 0) {
+		printf("没有绑定导入\n");
+		return;
+	}
+
+	char* base = (char*)firstBI;
+	BoundImport* bi = firstBI;
+	while (bi->TimeDateStamp != 0 && bi->OffsetModuleName != 0) {
+		int num = bi->NumberOfModule;
+		printf("TimeDateStamp: %X\n", bi->TimeDateStamp);
+		printf("NumberOfModule: %d\n", bi->NumberOfModule);
+		printf("OffsetModuleName: %s\n", (char*)(bi->OffsetModuleName + base));
+		bi++;
+		while (num--) {
+			printf("  -> TimeDateStamp: %X\n", bi->TimeDateStamp);
+			printf("  -> Reverved: %x\n", bi->NumberOfModule);
+			printf("  -> OffsetModuleName: %s\n", (char*)(bi->OffsetModuleName + base));
+			bi++;
+		}
+		printf("-------------------------------\n");
+	}
+}
 //===============================================================
 void* rvaToFoa(PE* pe, int rva) {
 	if (rva == 0) return 0;

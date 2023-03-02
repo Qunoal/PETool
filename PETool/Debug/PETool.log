@@ -1,6 +1,16 @@
-﻿  PETool.cpp
+﻿  PE.cpp
+D:\Code\C\project\PETool\PETool\PE.cpp(96,12): warning C4309: “=”: 截断常量值
+D:\Code\C\project\PETool\PETool\PE.cpp(562,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(566,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(572,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(580,20): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(583,21): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(767,11): warning C4018: “<”: 有符号/无符号不匹配
+D:\Code\C\project\PETool\PETool\PE.cpp(780,20): warning C4018: “<”: 有符号/无符号不匹配
+  PETool.cpp
 D:\Code\C\project\PETool\PETool\PETool.cpp(16,5): warning C4838: 从“int”转换到“char”需要收缩转换
 D:\Code\C\project\PETool\PETool\PETool.cpp(16,5): warning C4309: “初始化”: 截断常量值
 D:\Code\C\project\PETool\PETool\PETool.cpp(21,5): warning C4838: 从“int”转换到“char”需要收缩转换
 D:\Code\C\project\PETool\PETool\PETool.cpp(21,5): warning C4309: “初始化”: 截断常量值
+  正在生成代码...
   PETool.vcxproj -> D:\Code\C\project\PETool\Debug\PETool.exe

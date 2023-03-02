@@ -133,7 +133,7 @@ struct ImportTable {
 	unsigned int OriginalFirstThunk;      // RVA 指向IMAGE_THUNK_DATA结构数组				
 	unsigned int TimeDateStamp;           // 时间戳				
 	unsigned int ForwarderChain;
-	unsigned int Name;					          // RVA,指向dll名字，该名字已0结尾				
+	unsigned int Name;					  // RVA,指向dll名字，该名字已0结尾				
 	unsigned int FirstThunk;              // RVA,指向IMAGE_THUNK_DATA结构数组				
 };
 /**
@@ -160,7 +160,7 @@ PE getPE(char* buffer);
 PE getPE(const char* filePath);
 PE loadImageBuffer(PE* pe);
 int injectShellCode(PE* pe, char* injectPoint, char* shellCode, int callAddress[], int shellCodeLen);
-PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName);
+PE addNewSection(PE* pe, int newSectionSize, const char* newSectionName, int* startPoint);
 PE capacityLastSection(PE* pe, int increment);
 /**
 * @param pe 需要合并的PE结构
@@ -184,11 +184,11 @@ int moveRelocationTable(PE* pe, char* dest);
 * @param dest 移动的目的地(pe结构内的地址)
 * @return int 导出表共多少字节
 */
-int moveImportTable(PE pe, char* dest);
+int moveImportTable(PE* pe, char* dest);
 
-void repairRelocationTable(PE pe, int newImageBase);
-void repairINT(PE pe, char* dllName, int* INT, int* IAT);
-int injectDllToImportTable(PE pe, char* dllName, char* functionName);
+void repairRelocationTable(PE* pe, int newImageBase);
+void repairINT(PE* pe, char* dllName, int* INT, int* IAT);
+int injectDllToImportTable(PE* pe, char* dllName, char* functionName);
 
 // ======================================= Print =================================================== 
 void printDosHead(PE* pe);        // 打印输出：dos头
@@ -205,6 +205,7 @@ void* rvaToFoa(PE* pe, int rva);
 void* foaToRva(PE* pe, int foa);
 void* getFunction(PE* pe, int number);
 void* getFunction(PE* pe, const char* functionName);
+void repairINT(PE* pe,  char* dllName, int* INT, int* IAT);
 
 void memoryInit(char* addr, int size, char value);
 void memoryCopy(char* srcAddr, char* destAddr,int size);
